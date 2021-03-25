@@ -1,0 +1,12 @@
+- name: "Get container info"
+  docker_container_info:
+    name: "{{item}}"
+  register: container_info
+
+- name: "Extract IP and make it a host"
+  set_fact:
+    docker_host: "{{ container_info.container.NetworkSettings.IPAddress }} ansible_user=root ansible_ssh_pass=toor"
+
+- name: "Append IPs"
+  set_fact:
+    docker_ips: "{{ docker_ips + [docker_host] }}"

@@ -1,0 +1,145 @@
+- hosts: localhost
+  pre_tasks:
+
+    - name: "Shell command to get list of open ports"
+      shell: "netstat -nltp | awk '/LISTEN/ {print $4}' | awk -F: '{print $NF}' | sort | uniq"
+      register: ports
+
+    - name: "Get info on all running docker containers"
+      docker_host_info:
+        containers: yes
+      register: running_containers
+
+    - name: "Get info on all exited docker containers"
+      docker_host_info:
+        containers: yes
+        containers_filters:
+          status: "exited"
+      register: exited_containers
+
+    - name: "Initialize container names list"
+      set_fact:
+        container_names: []
+
+    - name: "Append running container names to the list"
+      set_fact:
+        container_names: "{{ container_names + item }}"
+      loop: "{{ running_containers.containers | map(attribute='Names') }}"
+
+    - name: "Append exited container names to the list"
+      set_fact:
+        container_names: "{{ container_names + item }}"
+      loop: "{{ exited_containers.containers | map(attribute='Names') }}"
+
+    - name: "List of open ports"
+      debug:
+        msg: "{{ ports.stdout_lines }}"
+
+    - name: "List of container names"
+      debug:
+        msg: "{{ container_names }}"
+
+- hosts: localhost
+  vars_prompt:
+
+    - name: httpd_port
+      prompt: "Enter a unique port number for httpd service"
+      default: 5000
+      private: no
+
+    - name: container_name
+      prompt: "Enter a unique docker container name"
+      default: "webserver"
+      private: no
+    
+    - name: inventory_path
+      prompt: "Enter the path to inventory directory"
+      default: "/root/ansible/dynamic_inventory"
+      private: no
+
+    - name: webpages_path
+      prompt: "Enter the path to webpages"
+      default: "./webpages"
+      private: no
+
+  tasks:
+
+    - name: "Configure yum with docker software"
+      yum_repository:
+        description: "docker software"
+        file: "docker"
+        name: "docker"
+        baseurl: "https://download.docker.com/linux/centos/7/x86_64/stable/"
+        gpgcheck: "no"
+
+    - name: "Install docker"
+      package:
+        name: "docker-ce-18.06.3.ce-3.el7.x86_64"
+        state: "present"
+
+    - name: "Install docker SDK"
+      pip:
+        name: "docker"
+ 
+    - name: "Switch off SELinux"
+      selinux:
+        policy: "targeted"
+        state: "permissive"
+
+    - name: "Start and enable docker services"
+      service:
+        name: "docker"
+        state: "started"
+        enabled: "yes"
+
+    - name: "Pull httpd and ssh image from Docker Hub"
+      docker_image:
+        name: "syogesh174/centos-ssh-httpd:1"
+        source: "pull"
+
+    - name: "Launch a container"
+      docker_container:
+        name: "{{ container_name }}"
+        image: "syogesh174/centos-ssh-httpd:1"
+        labels:
+          app: "webserver"
+        ports: "{{ httpd_port }}:80"
+
+    - name: "Get info on docker containers"
+      docker_host_info:
+        containers: yes
+        verbose_output: yes
+        containers_filters:
+          label: "app=webserver"
+          status: running
+      register: containers
+
+    - name: "Initialize an empty list for IPs"
+      set_fact:
+        docker_ips: []
+
+    - name: "Properly append the IPs"
+      include_tasks: docker_ips.yml
+      loop: "{{ containers.containers| map(attribute='Id') }}"
+
+    - name: "Copy the docker hosts template"
+      template:
+        src: "docker_hosts.j2"
+        dest: "{{ inventory_path }}/docker_hosts"
+
+    - name: "Refresh inventory to ensure containers exist in inventory"
+      meta: refresh_inventory
+
+    - name: "Set webpages_path as a fact"
+      set_fact:
+        webpages_path: "{{ webpages_path }}"
+
+- hosts: docker
+  vars:
+    - webpages_path: "{{hostvars.localhost.webpages_path}}"
+  tasks:
+    - name: "Transfer webpages"
+      copy:
+        src: "{{ item }}"
+        dest: "/var/www/html"
+      with_fileglob: "{{ webpages_path }}/*"
